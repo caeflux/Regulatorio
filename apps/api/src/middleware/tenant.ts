@@ -12,9 +12,13 @@ export async function tenantMiddleware(request: FastifyRequest, reply: FastifyRe
   request.tenantId = user.tenantId
 }
 
-// Augment FastifyRequest type
+// Augment Fastify types
 declare module 'fastify' {
   interface FastifyRequest {
     tenantId: string
+  }
+  interface FastifyInstance {
+    authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>
+    tenant: (request: FastifyRequest, reply: FastifyReply) => Promise<void>
   }
 }
