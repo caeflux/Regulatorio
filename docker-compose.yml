@@ -1,0 +1,80 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: regtelecom-db
+    environment:
+      POSTGRES_DB: regtelecom
+      POSTGRES_USER: regtelecom
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-regtelecom_dev_2026}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U regtelecom"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: regtelecom-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: regtelecom-api
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://regtelecom:${DB_PASSWORD:-regtelecom_dev_2026}@postgres:5432/regtelecom
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_production}
+      GOVBR_CLIENT_ID: ${GOVBR_CLIENT_ID}
+      GOVBR_CLIENT_SECRET: ${GOVBR_CLIENT_SECRET}
+      GOVBR_REDIRECT_URI: ${GOVBR_REDIRECT_URI:-http://localhost:3000/auth/callback/govbr}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/api:/app/apps/api
+      - ./packages:/app/packages
+      - /app/node_modules
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: regtelecom-web
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      NEXT_PUBLIC_GOVBR_CLIENT_ID: ${GOVBR_CLIENT_ID}
+    depends_on:
+      - api
+    volumes:
+      - ./apps/web:/app/apps/web
+      - ./packages:/app/packages
+      - /app/node_modules
+
+volumes:
+  postgres_data:
+  redis_data:

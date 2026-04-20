@@ -1,0 +1,367 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// MULTI-TENANCY
+// ============================================
+
+model Tenant {
+  id              String   @id @default(uuid())
+  cnpj            String   @unique
+  razaoSocial     String   @map("razao_social")
+  nomeFantasia    String?  @map("nome_fantasia")
+  licencaScm      String?  @map("licenca_scm")
+  licencaStfc     String?  @map("licenca_stfc")
+  numeroOutorga   String?  @map("numero_outorga")
+  endereco        String?
+  telefone        String?
+  email           String?
+  site            String?
+  plan            Plan     @default(STARTER)
+  stripeCustomerId     String? @map("stripe_customer_id")
+  stripeSubscriptionId String? @map("stripe_subscription_id")
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  users                User[]
+  obligationInstances  ObligationInstance[]
+  revenueEntries       RevenueEntry[]
+  contributions        Contribution[]
+  accessData           AccessData[]
+  diciReports          DICIReport[]
+  generatedDocuments   GeneratedDocument[]
+  alerts               Alert[]
+
+  @@map("tenants")
+}
+
+enum Plan {
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+// ============================================
+// AUTHENTICATION & AUTHORIZATION
+// ============================================
+
+model User {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  email       String   @unique
+  senhaHash   String?  @map("senha_hash")
+  nome        String
+  cpf         String?  @unique
+  cargo       String?
+  role        Role     @default(OPERADOR)
+  govbrSub    String?  @unique @map("govbr_sub")
+  lastLogin   DateTime? @map("last_login")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant      Tenant @relation(fields: [tenantId], references: [id])
+  obligationInstances ObligationInstance[] @relation("responsible")
+
+  @@map("users")
+}
+
+enum Role {
+  ADMIN
+  GESTOR
+  OPERADOR
+}
+
+// ============================================
+// OBRIGAÇÕES REGULATÓRIAS
+// ============================================
+
+model Obligation {
+  id                String              @id @default(uuid())
+  nome              String
+  tipo              ObligationType
+  frequencia        Frequency
+  prazoDia          Int                 @map("prazo_dia")
+  prazoRegra        DeadlineRule        @map("prazo_regra") @default(DIA_UTIL)
+  descricao         String?
+  fundamentacaoLegal String?            @map("fundamentacao_legal")
+  ativo             Boolean             @default(true)
+  createdAt         DateTime            @default(now()) @map("created_at")
+
+  instances         ObligationInstance[]
+
+  @@map("obligations")
+}
+
+enum ObligationType {
+  DICI_MENSAL
+  DICI_SEMESTRAL
+  DICI_ANUAL
+  FUST
+  FUNTTEL
+  COLETA_ANUAL
+  CADASTRAL_MOSAICO
+  SEGURANCA_CIBERNETICA
+  CONFORMIDADE_RGC
+  OUTORGA
+  OUTRO
+}
+
+enum Frequency {
+  MENSAL
+  SEMESTRAL
+  ANUAL
+  EVENTUAL
+}
+
+enum DeadlineRule {
+  DIA_CORRIDO
+  DIA_UTIL
+  ULTIMO_DIA_UTIL
+}
+
+model ObligationInstance {
+  id              String              @id @default(uuid())
+  tenantId        String              @map("tenant_id")
+  obligationId    String              @map("obligation_id")
+  periodo         String              // formato: "2026-04" ou "2026"
+  dataLimite      DateTime            @map("data_limite")
+  status          ObligationStatus    @default(PENDENTE)
+  responsavelId   String?             @map("responsavel_id")
+  comprovanteUrl  String?             @map("comprovante_url")
+  notas           String?
+  completedAt     DateTime?           @map("completed_at")
+  createdAt       DateTime            @default(now()) @map("created_at")
+  updatedAt       DateTime            @updatedAt @map("updated_at")
+
+  tenant          Tenant     @relation(fields: [tenantId], references: [id])
+  obligation      Obligation @relation(fields: [obligationId], references: [id])
+  responsavel     User?      @relation("responsible", fields: [responsavelId], references: [id])
+  alerts          Alert[]
+
+  @@unique([tenantId, obligationId, periodo])
+  @@map("obligation_instances")
+}
+
+enum ObligationStatus {
+  PENDENTE
+  EM_ANDAMENTO
+  CONCLUIDA
+  ATRASADA
+}
+
+// ============================================
+// CONTRIBUIÇÕES FUST / FUNTTEL
+// ============================================
+
+model RevenueEntry {
+  id                      String   @id @default(uuid())
+  tenantId                String   @map("tenant_id")
+  mes                     Int
+  ano                     Int
+  receitaOperacionalBruta Decimal  @map("receita_operacional_bruta") @db.Decimal(15, 2)
+  icms                    Decimal  @default(0) @db.Decimal(15, 2)
+  pis                     Decimal  @default(0) @db.Decimal(15, 2)
+  cofins                  Decimal  @default(0) @db.Decimal(15, 2)
+  vendasCanceladas        Decimal  @default(0) @map("vendas_canceladas") @db.Decimal(15, 2)
+  descontos               Decimal  @default(0) @db.Decimal(15, 2)
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  tenant       Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, mes, ano])
+  @@map("revenue_entries")
+}
+
+model Contribution {
+  id              String             @id @default(uuid())
+  tenantId        String             @map("tenant_id")
+  tipo            ContributionType
+  periodo         String             // "2026-04"
+  baseCalculo     Decimal            @map("base_calculo") @db.Decimal(15, 2)
+  aliquota        Decimal            @db.Decimal(5, 4)
+  valorDevido     Decimal            @map("valor_devido") @db.Decimal(15, 2)
+  status          PaymentStatus      @default(CALCULADO)
+  comprovanteUrl  String?            @map("comprovante_url")
+  dataPagamento   DateTime?          @map("data_pagamento")
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+
+  tenant          Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, tipo, periodo])
+  @@map("contributions")
+}
+
+enum ContributionType {
+  FUST
+  FUNTTEL
+}
+
+enum PaymentStatus {
+  CALCULADO
+  PAGO
+  ATRASADO
+}
+
+// ============================================
+// DICI - RELATÓRIOS
+// ============================================
+
+model AccessData {
+  id              String   @id @default(uuid())
+  tenantId        String   @map("tenant_id")
+  mes             Int
+  ano             Int
+  municipioIbge   String   @map("municipio_ibge")
+  tipoAcesso      AccessType @map("tipo_acesso")
+  tecnologia      Technology
+  velocidadeDown  Decimal  @map("velocidade_down") @db.Decimal(10, 2)
+  velocidadeUp    Decimal  @map("velocidade_up") @db.Decimal(10, 2)
+  zona            Zone
+  quantidade      Int
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  tenant          Tenant @relation(fields: [tenantId], references: [id])
+
+  @@map("access_data")
+}
+
+enum AccessType {
+  PESSOA_FISICA
+  PESSOA_JURIDICA
+}
+
+enum Technology {
+  FTTX
+  CABLE_MODEM
+  XDSL
+  RADIO
+  SATELITE
+  OUTROS
+}
+
+enum Zone {
+  URBANA
+  RURAL
+}
+
+model DICIReport {
+  id              String       @id @default(uuid())
+  tenantId        String       @map("tenant_id")
+  periodo         String       // "2026-04"
+  tipo            ReportType
+  status          ReportStatus @default(RASCUNHO)
+  arquivoUrl      String?      @map("arquivo_url")
+  validacaoErros  Json?        @map("validacao_erros")
+  dataEnvio       DateTime?    @map("data_envio")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  tenant          Tenant @relation(fields: [tenantId], references: [id])
+
+  @@map("dici_reports")
+}
+
+enum ReportType {
+  MENSAL
+  SEMESTRAL
+  ANUAL
+}
+
+enum ReportStatus {
+  RASCUNHO
+  VALIDADO
+  ENVIADO
+}
+
+// ============================================
+// CONTRATOS E DOCUMENTOS
+// ============================================
+
+model ContractTemplate {
+  id          String   @id @default(uuid())
+  nome        String
+  tipo        String
+  versao      Int      @default(1)
+  conteudo    String   // template Handlebars
+  variaveis   Json?    // schema das variáveis esperadas
+  ativo       Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  documents   GeneratedDocument[]
+
+  @@map("contract_templates")
+}
+
+model GeneratedDocument {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  templateId  String   @map("template_id")
+  dadosMerge  Json     @map("dados_merge")
+  arquivoUrl  String?  @map("arquivo_url")
+  formato     String   @default("PDF") // PDF, DOCX
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id])
+  template    ContractTemplate @relation(fields: [templateId], references: [id])
+
+  @@map("generated_documents")
+}
+
+// ============================================
+// BASE DE CONHECIMENTO
+// ============================================
+
+model KnowledgeArticle {
+  id              String   @id @default(uuid())
+  titulo          String
+  slug            String   @unique
+  categoria       String
+  conteudo        String   // Markdown
+  tags            String[]
+  legislacaoRefs  Json?    @map("legislacao_refs")
+  versao          Int      @default(1)
+  publicado       Boolean  @default(false)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("knowledge_articles")
+}
+
+// ============================================
+// ALERTAS
+// ============================================
+
+model Alert {
+  id                    String   @id @default(uuid())
+  tenantId              String   @map("tenant_id")
+  obligationInstanceId  String?  @map("obligation_instance_id")
+  tipo                  AlertType
+  antecedenciaDias      Int      @map("antecedencia_dias")
+  destinatario          String
+  enviado               Boolean  @default(false)
+  enviadoAt             DateTime? @map("enviado_at")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  tenant                Tenant              @relation(fields: [tenantId], references: [id])
+  obligationInstance    ObligationInstance?  @relation(fields: [obligationInstanceId], references: [id])
+
+  @@map("alerts")
+}
+
+enum AlertType {
+  EMAIL
+  WHATSAPP
+  PUSH
+}
